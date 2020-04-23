@@ -6,6 +6,7 @@ from .operations import *
 from .session import *
 from .train import *
 from .loss import *
+from .timer import *
 
 # Create a default graph.
 import builtins
