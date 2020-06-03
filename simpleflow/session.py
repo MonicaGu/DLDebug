@@ -3,6 +3,7 @@
 ''' Session to execute a computational graph.
 '''
 from functools import reduce
+from memory_profiler import profile
 
 from .operations import Operation, Variable, Placeholder, compute_gradients
 

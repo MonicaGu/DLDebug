@@ -7,7 +7,8 @@ import simpleflow as sf
 # 
 import tensorflow as tf
 
-mnist = np.load("./mnist.npz")
+#mnist = np.load("./mnist.npz")
+mnist = np.load("/Users/gudiandian/Downloads/mnist.npz")
 x_train = mnist['x_train']
 x_test = mnist['x_test']
 y_train = mnist['y_train']
@@ -59,4 +60,7 @@ with sf.DebugSession() as debug_sess:
 	debug_sess.run(loss, feed_dict=feed_dict_train, frameworks=['tf', 'pytorch'])
     
 sf.stop_timer()
-sf.show_timer(mode='grad', form="graph")
+#sf.show_timer(mode='grad', form="graph")
+sf.show_timer(mode='all', form="text")
+sf.show_timer(mode='prop', form="text")
+sf.show_timer(mode='grad', form="text")

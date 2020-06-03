@@ -39,7 +39,7 @@ def _timer_wrapper(func):
         raise ValueError
     @functools.wraps(func)
     def wrapper(*args, **kargs):
-        op_name = args[0].__class__.__name__
+        op_name = args[0].framework + "_" + args[0].__class__.__name__
         start_time = time.time()
         result = func(*args)
         end_time = time.time()

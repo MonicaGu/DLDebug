@@ -49,11 +49,8 @@ train_op = sf.GradientDescentOptimizer(learning_rate=0.02, framework='pytorch').
 index_in_epoch = 0
 feed_dict_train = {x: x_train[:10000].reshape(10000, 784), y: y_train[:10000]}
 feed_dict_test = {x: x_test.reshape(10000, 784), y: y_test}
-"""
-with sf.Session() as sess:
-	loss_value = sess.run(loss, feed_dict=feed_dict_train)
-	print(loss_value)
-"""
+
+
 with sf.DebugSession() as debug_sess:
 	debug_sess.run(loss, feed_dict=feed_dict_train, frameworks=['tf', 'pytorch'])
-	#print(loss)
+

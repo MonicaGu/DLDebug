@@ -3,15 +3,16 @@
 ''' Operation classes in computational graph.
 '''
 from queue import Queue
-
+from memory_profiler import profile
 import numpy as np
 
 import tensorflow as tf
 from torch.autograd import Variable as V
 import torch
+import mxnet as mx
 
 class Operation(object):
-    ''' Base class for all operations in simpleflow.
+    ''' Base class for all operations in DLdebug.
 
     An operation is a node in computational graph receiving zero or more nodes
     as input and produce zero or more nodes as output. Vertices could be an
@@ -100,6 +101,12 @@ class Add(Operation):
 
     def pytorch_compute_output(self):
         return torch.add
+
+    def mx_compute_output(self, x, y):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        y0 = mx.nd.array(y).as_np_ndarray()
+        return (x0 + y0).asnumpy()
+
     def tflite_compute_output(self, x, y):
         input1 = tf.keras.layers.Input(shape=np.array(x).shape, dtype=tf.float32)
         input2 = tf.keras.layers.Input(shape=np.array(y).shape, dtype=tf.float32)
@@ -123,11 +130,12 @@ class Add(Operation):
         interp.invoke()
         return interp.get_tensor(output_index)
 
+    @profile(precision=4)
     def compute_output(self):
         ''' Compute and return the value of addition operation.
         '''
         x, y = self.input_nodes
-        #self.output_value = np.add(x.output_value, y.output_value)
+
         if self.framework == 'tf':
             self.output_value = self.tf_compute_output()(x.output_value, y.output_value).numpy()
             return self.output_value
@@ -139,9 +147,12 @@ class Add(Operation):
         elif self.framework == 'tflite':
             self.output_value = self.tflite_compute_output(x.output_value, y.output_value)
             return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value, y.output_value)
+            return self.output_value
         else:
             raise NotImplementedError
-
+    @profile(precision=4)
     def compute_gradient(self, grad=None, optimizer=None):
         ''' Compute the gradients for this operation wrt input values.
 
@@ -154,24 +165,6 @@ class Add(Operation):
         if grad is None:
             grad = np.ones_like(self.output_value)
 
-        """
-        # original method
-        grad_wrt_x = grad
-        while np.ndim(grad_wrt_x) > len(np.shape(x)):
-            grad_wrt_x = np.sum(grad_wrt_x, axis=0)
-        for axis, size in enumerate(np.shape(x)):
-            if size == 1:
-                grad_wrt_x = np.sum(grad_wrt_x, axis=axis, keepdims=True)
-
-        #print("Add, doutput_dx: ", dz_dx, grad_wrt_x) OK!!!
-        
-        grad_wrt_y = grad
-        while np.ndim(grad_wrt_y) > len(np.shape(y)):
-            grad_wrt_y = np.sum(grad_wrt_y, axis=0)
-        for axis, size in enumerate(np.shape(y)):
-            if size == 1:
-                grad_wrt_y = np.sum(grad_wrt_y, axis=axis, keepdims=True)
-        """
         if self.framework == 'tf':
             tf_x = tf.constant(x, tf.float64)
             tf_y = tf.constant(y, tf.float64)
@@ -201,6 +194,15 @@ class Add(Operation):
             out = self.pytorch_compute_output()(th_x, th_y)
             out.backward(th_grad, retain_graph=True)
             return [np.array(th_x.grad), np.array(th_y.grad)]
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            y0 = mx.nd.array(y).as_np_ndarray()
+            x0.attach_grad()
+            y0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * (x0 + y0)
+                mx_result.backward()
+            return [x0.grad.asnumpy(), y0.grad.asnumpy()]
         else:
             raise NotImplementedError
 
@@ -233,8 +235,15 @@ class Multiply(Operation):
 
     def tf_compute_output(self):
         return tf.multiply
+
     def pytorch_compute_output(self):
         return torch.mul
+
+    def mx_compute_output(self, x, y):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        y0 = mx.nd.array(y).as_np_ndarray()
+        return (x0 * y0).asnumpy()
+
     def tflite_compute_output(self, x, y):
         input1 = tf.keras.layers.Input(shape=np.array(x).shape, dtype=tf.float32)
         input2 = tf.keras.layers.Input(shape=np.array(y).shape, dtype=tf.float32)
@@ -262,7 +271,7 @@ class Multiply(Operation):
         ''' Compute and return the multiplication operation result.
         '''
         x, y = self.input_nodes
-        #self.output_value = np.multiply(x.output_value, y.output_value)
+
         if self.framework == 'tf':
             self.output_value = self.tf_compute_output()(x.output_value, y.output_value).numpy()
             return self.output_value
@@ -273,6 +282,9 @@ class Multiply(Operation):
             return self.output_value
         elif self.framework == 'tflite':
             self.output_value = self.tflite_compute_output(x.output_value, y.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value, y.output_value)
             return self.output_value
         else:
             raise NotImplementedError
@@ -288,22 +300,6 @@ class Multiply(Operation):
         if grad is None:
             grad = np.ones_like(self.output_value)
 
-        """
-        # original method
-        grad_wrt_x = grad*y
-        while np.ndim(grad_wrt_x) > len(np.shape(x)):
-            grad_wrt_x = np.sum(grad_wrt_x, axis=0)
-        for axis, size in enumerate(np.shape(x)):
-            if size == 1:
-                grad_wrt_x = np.sum(grad_wrt_x, axis=axis, keepdims=True)
-
-        grad_wrt_y = grad*x
-        while np.ndim(grad_wrt_y) > len(np.shape(y)):
-            grad_wrt_y = np.sum(grad_wrt_y, axis=0)
-        for axis, size in enumerate(np.shape(y)):
-            if size == 1:
-                grad_wrt_y = np.sum(grad_wrt_y, axis=axis, keepdims=True)
-        """
         if self.framework == 'tf':
             tf_x = tf.constant(x, tf.float64)
             tf_y = tf.constant(y, tf.float64)
@@ -314,14 +310,12 @@ class Multiply(Operation):
             dz_dx = g.gradient(out, tf_x).numpy()
             del g
 
-            #dz_dx = grad*dz_dx
             while np.ndim(dz_dx) > len(np.shape(x)):
                 dz_dx = np.mean(dz_dx, axis=0)
             for axis, size in enumerate(np.shape(x)):
                 if size == 1:
                     dz_dx = np.mean(dz_dx, axis=axis, keepdims=True)
 
-            #dz_dy = grad*dz_dy
             while np.ndim(dz_dy) > len(np.shape(y)):
                 dz_dy = np.mean(dz_dy, axis=0)
             for axis, size in enumerate(np.shape(y)):
@@ -337,6 +331,16 @@ class Multiply(Operation):
             out = self.pytorch_compute_output()(th_x, th_y) # th_x * th_y
             out.backward(th_grad, retain_graph=True)
             return [np.array(th_x.grad), np.array(th_y.grad)]
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            y0 = mx.nd.array(y).as_np_ndarray()
+            x0.attach_grad()
+            y0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * x0 * y0
+                mx_result.backward()
+            return [x0.grad.asnumpy(), y0.grad.asnumpy()]
 
         else:
             raise NotImplementedError
@@ -374,6 +378,11 @@ class MatMul(Operation):
     def pytorch_compute_output(self):
         return torch.mm
 
+    def mx_compute_output(self, x, y):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        y0 = mx.nd.array(y).as_np_ndarray()
+        return (mxnet.ndarray.batch_dot(x0, y0)).asnumpy()
+
     def tflite_compute_output(self, x, y):
         input1 = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
         input2 = tf.keras.layers.Input(shape=y.shape, dtype=tf.float32)
@@ -402,7 +411,7 @@ class MatMul(Operation):
         ''' Compute and return the multiplication operation result.
         '''
         x, y = self.input_nodes
-        #self.output_value = np.dot(x.output_value, y.output_value)
+
         if self.framework == 'tf':
             self.output_value = self.tf_compute_output()(x.output_value, y.output_value).numpy()
             return self.output_value
@@ -413,6 +422,9 @@ class MatMul(Operation):
             return self.output_value
         elif self.framework == 'tflite':
             self.output_value = self.tflite_compute_output(x.output_value, y.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value, y.output_value)
             return self.output_value
         else:
             raise NotImplementedError
@@ -431,12 +443,6 @@ class MatMul(Operation):
             grad = np.ones_like(self.output_value)
 
         # Gradients wrt inputs.
-        """
-        # original method
-        dfdx = np.dot(grad, np.transpose(y))
-        dfdy = np.dot(np.transpose(x), grad)
-        return [dfdx, dfdy]
-        """
         if self.framework == 'tf':
             tf_x = tf.constant(x, tf.float64)
             tf_y = tf.constant(y, tf.float64)
@@ -455,6 +461,16 @@ class MatMul(Operation):
             out = self.pytorch_compute_output()(th_x, th_y) # th_x * th_y
             out.backward(th_grad, retain_graph=True)
             return [np.array(th_x.grad), np.array(th_y.grad)]
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            y0 = mx.nd.array(y).as_np_ndarray()
+            x0.attach_grad()
+            y0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.batch_dot(x0, y0)
+                mx_result.backward()
+            return [x0.grad.asnumpy(), y0.grad.asnumpy()]
 
         else:
             raise NotImplementedError
@@ -483,22 +499,98 @@ class Sigmoid(Operation):
         '''
         super(self.__class__, self).__init__(x, name=name)
 
+    def tf_compute_output(self):
+        return tf.sigmoid
+
+    def pytorch_compute_output(self):
+        return torch.nn.Sigmoid
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.sigmoid(x0)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.sigmoid(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
     def compute_output(self):
-        ''' Compute and return the value of sigmoid function.
+        ''' Compute and return the sigmoid operation result.
         '''
         x, = self.input_nodes
-        self.output_value = 1/(1 + np.exp(-x.output_value))
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for sigmoid operation wrt input value.
+        ''' Compute and return the gradient for sigmoid.
 
         :param grad: The gradient of other operation wrt the sigmoid output.
-        :type grad: ndarray.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
+        # Get input values.
+        x = self.input_nodes[0].output_value
+
+        # Default gradient wrt the sigmoid output.
         if grad is None:
             grad = np.ones_like(self.output_value)
-        return grad*self.output_value*(1 - self.output_value)
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.sigmoid(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
+
 
 def sigmoid(x, name=None):
     ''' Computes sigmoid of `x` element-wise.
@@ -523,35 +615,97 @@ class Log(Operation):
         '''
         super(self.__class__, self).__init__(x, name=name)
 
+    def tf_compute_output(self):
+        return tf.math.log
+
+    def pytorch_compute_output(self):
+        return torch.log
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.log(x0)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.math.log(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
     def compute_output(self):
-        ''' Compute and return the value of sigmoid function.
+        ''' Compute and return the log operation result.
         '''
         x, = self.input_nodes
-        self.output_value = np.log(x.output_value)
-        #print("log: ", self.output_value)
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for natural logarithm operation wrt input value.
+        ''' Compute and return the gradient for log.
 
-        :param grad: The gradient of other operation wrt the logarithm output.
-        :type grad: ndarray.
+        :param grad: The gradient of other operation wrt the log output.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
+        # Get input values.
         x = self.input_nodes[0].output_value
+
+        # Default gradient wrt the log output.
         if grad is None:
             grad = np.ones_like(self.output_value)
-        """
-        g0=grad*1/x
-        tf_x = tf.constant(x, tf.float64)
-        with tf.GradientTape() as g:
-            g.watch(tf_x)
-            out = grad * tf.math.log(tf_x)
-        dz_dx = g.gradient(out, tf_x).numpy()
-        print("grad before log: ", grad[0])
-        print("grad after log: ", g0[0])
-        print("dz_dx: ", dz_dx[0])
-        """
-        return grad*1/x
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.log(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
 
 def log(x, name=None):
     ''' Computes the natural logarithm of x element-wise.
@@ -566,7 +720,7 @@ class Negative(Operation):
     ''' Negative operation.
     '''
     def __init__(self, x, name=None):
-        ''' Operation constructor.
+        ''' Negative constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -577,7 +731,7 @@ class Negative(Operation):
         super(self.__class__, self).__init__(x, name=name)
 
     def compute_output(self):
-        ''' Compute and return the value of sigmoid function.
+        ''' Compute and return the value of negative function.
         '''
         x, = self.input_nodes
         self.output_value = -x.output_value
@@ -600,8 +754,8 @@ class Negative(Operation):
 class ReduceSum(Operation):
     ''' Reduce sum operation.
     '''
-    def __init__(self, x, axis=None):
-        ''' Operation constructor.
+    def __init__(self, x, axis=None, keepdims=False):
+        ''' ReduceSum constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -611,18 +765,52 @@ class ReduceSum(Operation):
         '''
         super(self.__class__, self).__init__(x)
         self.axis = axis
+        self.keepdims = keepdims
+
+    def tf_compute_output(self):
+        return tf.reduce_sum
+
+    def tflite_compute_output(self, x, rate, keepdims):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.reduce_sum(input1, input2)
+        model = tf.keras.Model(inputs=input1, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
 
     def compute_output(self):
-        ''' Compute and return the value of sigmoid function.
+        ''' Compute and return the value of reduce_sum function.
         '''
         x, = self.input_nodes
-        self.output_value = np.sum(x.output_value, self.axis)
-        return self.output_value
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value, 
+                self.axis, self.keepdims).numpy()
+            return self.output_value
+
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value,
+                self.axis, self.keepdims)
+            return self.output_value
+
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for negative operation wrt input value.
+        ''' Compute the gradient for reduce_sum operation wrt input value.
 
-        :param grad: The gradient of other operation wrt the negative output.
+        :param grad: The gradient of other operation wrt the reduce_sum output.
         :type grad: ndarray.
         '''
         input_value = self.input_nodes[0].output_value
@@ -630,11 +818,18 @@ class ReduceSum(Operation):
         if grad is None:
             grad = np.ones_like(self.output_value)
 
-        output_shape = np.array(np.shape(input_value))
-        output_shape[self.axis] = 1.0
-        tile_scaling = np.shape(input_value) // output_shape
-        grad = np.reshape(grad, output_shape)
-        return np.tile(grad, tile_scaling)
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(input_value, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(input_value)
+                out = grad * self.tf_compute_output()(tf_x, self.axis, self.keepdims)
+            dz_dx = g.gradient(out, tf_x).numpy()
+
+            del g
+            return dz_dx
+        else:
+            raise NotImplementedError
 
 def reduce_sum(x, axis=None):
     ''' Computes the sum of elements across dimensions of a tensor.
@@ -649,7 +844,7 @@ class Square(Operation):
     ''' Square operation.
     '''
     def __init__(self, x, name=None):
-        ''' Operation constructor.
+        ''' Square constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -659,25 +854,99 @@ class Square(Operation):
         '''
         super(self.__class__, self).__init__(x, name=name)
 
+    def tf_compute_output(self):
+        return tf.math.square
+
+    def pytorch_compute_output(self):
+        # no square function in pytorch. Use torch.mul(x, x) instead.
+        return torch.mul
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.square(x0)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.math.square(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
     def compute_output(self):
-        ''' Compute and return the value of square function.
+        ''' Compute and return the square operation result.
         '''
         x, = self.input_nodes
-        self.output_value = np.square(x.output_value)
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value)), 
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for square operation wrt input value.
+        ''' Compute and return the gradient for square.
 
         :param grad: The gradient of other operation wrt the square output.
-        :type grad: ndarray.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
-        input_value = self.input_nodes[0].output_value
+        # Get input values.
+        x = self.input_nodes[0].output_value
 
+        # Default gradient wrt the square output.
         if grad is None:
             grad = np.ones_like(self.output_value)
 
-        return grad*np.multiply(2.0, input_value)
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x, th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.square(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
 
 def square(x, name=None):
     ''' Computes square of x element-wise.
@@ -691,8 +960,8 @@ def square(x, name=None):
 class ReduceMean(Operation):
     ''' Reduce sum operation.
     '''
-    def __init__(self, x, axis=None):
-        ''' Operation constructor.
+    def __init__(self, x, axis=None, keepdims=False):
+        ''' ReduceMean constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -702,13 +971,48 @@ class ReduceMean(Operation):
         '''
         super(self.__class__, self).__init__(x)
         self.axis = axis
+        self.keepdims = keepdims
+
+    def tf_compute_output(self):
+        return tf.reduce_mean
+
+    def tflite_compute_output(self, x, rate, keepdims):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.reduce_mean(input1, input2)
+        model = tf.keras.Model(inputs=input1, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
 
     def compute_output(self):
         ''' Compute and return the value of reduce mean function.
         '''
         x, = self.input_nodes
-        self.output_value = np.mean(x.output_value, self.axis)
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value, 
+                self.axis, self.keepdims).numpy()
+            return self.output_value
+
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value,
+                self.axis, self.keepdims)
+            return self.output_value
+
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
         ''' Compute the gradient for reduce mean operation wrt input value.
@@ -720,23 +1024,23 @@ class ReduceMean(Operation):
 
         if grad is None:
             grad = np.ones_like(self.output_value)
-        
-        num = 1
-        output_shape = np.array(np.shape(input_value))
-        if self.axis != None:
-            num = np.shape(input_value)[self.axis]
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(input_value, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(input_value)
+                out = grad * self.tf_compute_output()(tf_x, self.axis, self.keepdims)
+            dz_dx = g.gradient(out, tf_x).numpy()
+
+            del g
+            return dz_dx
         else:
-            for i in range(len(np.shape(input_value))):
-                num *= np.shape(input_value)[i]
-        grad /= num
-        output_shape[self.axis] = 1.0
-        tile_scaling = np.shape(input_value) // output_shape
-        grad = np.reshape(grad, output_shape)
-        return np.tile(grad, tile_scaling)
+            raise NotImplementedError
 
 
 def reduce_mean(x, axis=None):
-    ''' Computes the sum of elements across dimensions of a tensor.
+    ''' Computes the mean of elements across dimensions of a tensor.
     '''
     return ReduceMean(x, axis=axis)
 
@@ -745,10 +1049,10 @@ def reduce_mean(x, axis=None):
 # ------------------------------------------------------------------------------
 
 class Softmax(Operation):
-    ''' Square operation.
+    ''' Softmax operation.
     '''
     def __init__(self, x, name=None, framework='tf'):
-        ''' Operation constructor.
+        ''' Softmax constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -763,6 +1067,10 @@ class Softmax(Operation):
     
     def pytorch_compute_output(self):
         return torch.nn.functional.softmax
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.Softmax(x0)).asnumpy()
 
     def tflite_compute_output(self, x):
         input = tf.keras.layers.Input(shape=np.array(x).shape, dtype=tf.float32)
@@ -787,6 +1095,7 @@ class Softmax(Operation):
         ''' Compute and return the value of softmax function.
         '''
         x, = self.input_nodes
+
         if self.framework == 'tf':
             self.output_value = self.tf_compute_output()(x.output_value).numpy()
             return self.output_value
@@ -796,6 +1105,9 @@ class Softmax(Operation):
             return self.output_value
         elif self.framework == 'tflite':
             self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
             return self.output_value
         else:
             raise NotImplementedError
@@ -809,7 +1121,7 @@ class Softmax(Operation):
         input_value = self.input_nodes[0].output_value
 
         if grad is None:
-            grad = np.ones_like(self.output_value) #10000, 10
+            grad = np.ones_like(self.output_value)
         
         if self.framework == 'tf':
             tf_x = tf.constant(input_value, tf.float64)
@@ -826,26 +1138,27 @@ class Softmax(Operation):
             out.backward(th_grad, retain_graph=True)
             return np.array(th_x.grad)
 
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.Softmax(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
         else:
             raise NotImplementedError
 
         
 
 def softmax(x, name=None, framework='tf'):
-    ''' Computes softmax of x element-wise.
+    ''' Computes softmax of x.
     '''
     return Softmax(x, name=name, framework=framework)
 
 def div(x, y, name=None):
     return multiply(x, inv(y))
 
-"""
-# this method fails to calculate softmax with more than one batches,
-# which is necessary for training
-# also, this graph is not supported
-def softmax(x, name=None):
-    return transpose(div(transpose(exp(x)), reduce_sum(exp(x), axis=1)))
-"""
 
 # ------------------------------------------------------------------------------
 # Inv operation
@@ -865,25 +1178,97 @@ class Inv(Operation):
         '''
         super(self.__class__, self).__init__(x, name=name)
 
+    def tf_compute_output(self):
+        return tf.math.reciprocal
+
+    def pytorch_compute_output(self):
+        return torch.reciprocal
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.reciprocal(x0)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.math.reciprocal(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
     def compute_output(self):
-        ''' Compute and return the value of inv function.
+        ''' Compute and return the multiplication operation result.
         '''
         x, = self.input_nodes
-        self.output_value = 1.0 / x.output_value
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for inv operation wrt input value.
+        ''' Compute and return the gradient for reciprocal.
 
-        :param grad: The gradient of other operation wrt the reduce mean output.
-        :type grad: ndarray.
+        :param grad: The gradient of other operation wrt the inv output.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
-        input_value = self.input_nodes[0].output_value
+        # Get input values.
+        x = self.input_nodes[0].output_value
 
+        # Default gradient wrt the inv output.
         if grad is None:
             grad = np.ones_like(self.output_value)
-        
-        return -grad / (input_value ** 2)
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.reciprocal(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
 
 
 def inv(x, name=None):
@@ -899,7 +1284,7 @@ class Exp(Operation):
     ''' Exp operation.
     '''
     def __init__(self, x, name=None):
-        ''' Operation constructor.
+        ''' Exp constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -909,26 +1294,97 @@ class Exp(Operation):
         '''
         super(self.__class__, self).__init__(x, name=name)
 
+    def tf_compute_output(self):
+        return tf.math.exp
+
+    def pytorch_compute_output(self):
+        return torch.exp
+
+    def mx_compute_output(self, x):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.exp(x0)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.math.exp(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
     def compute_output(self):
-        ''' Compute and return the value of exp function.
+        ''' Compute and return the exp operation result.
         '''
         x, = self.input_nodes
-        self.output_value = np.exp(x.output_value)
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for inv operation wrt input value.
+        ''' Compute and return the gradient for exp.
 
-        :param grad: The gradient of other operation wrt the expoutput.
-        :type grad: ndarray.
+        :param grad: The gradient of other operation wrt the exp output.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
-        input_value = self.input_nodes[0].output_value
+        # Get input values.
+        x = self.input_nodes[0].output_value
 
+        # Default gradient wrt the exp output.
         if grad is None:
             grad = np.ones_like(self.output_value)
-        
-        return grad * self.output_value
 
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.exp(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
 
 def exp(x, name=None):
     ''' Computes the inv of a tensor.
@@ -942,8 +1398,8 @@ def exp(x, name=None):
 class Transpose(Operation):
     ''' Transpose operation. PERMS NOT IMPLEMENTED!
     '''
-    def __init__(self, x, name=None):
-        ''' Operation constructor.
+    def __init__(self, x, axes=None, name=None):
+        ''' Transpose constructor.
 
         :param x: The input node.
         :type x: Object of `Operation`, `Variable` or `Placeholder`.
@@ -952,26 +1408,96 @@ class Transpose(Operation):
         :type name: str.
         '''
         super(self.__class__, self).__init__(x, name=name)
+        self.axes = axes
+
+    def tf_compute_output(self):
+        return tf.transpose
+
+    def mx_compute_output(self, x, axes):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.transpose(x0, axes=axes)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.math.tranposes(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
 
     def compute_output(self):
-        ''' Compute and return the value of exp function.
+        ''' Compute and return the transpose operation result.
         '''
         x, = self.input_nodes
-        self.output_value = np.transpose(x.output_value)
-        return self.output_value
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value, perm=self.axes).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = (torch.from_numpy(
+                np.array(x.output_value)).permute(self.axes)).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value, axes=axes)
+            return self.output_value
+        else:
+            raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for inv operation wrt input value.
+        ''' Compute and return the gradient for transpose.
 
-        :param grad: The gradient of other operation wrt the expoutput.
-        :type grad: ndarray.
+        :param grad: The gradient of other operation wrt the transpose output.
+        :type grad: number or a ndarray, default value is 1.0.
         '''
-        input_value = self.input_nodes[0].output_value
+        # Get input values.
+        x = self.input_nodes[0].output_value
 
+        # Default gradient wrt the transpose output.
         if grad is None:
             grad = np.ones_like(self.output_value)
-        
-        return grad.transpose()
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x, perm=self.axes)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = th_x.permute(self.axes)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.transpose(x0, axes=self.axes)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
 
 
 def transpose(x, name=None):
@@ -1004,6 +1530,10 @@ class Dropout(Operation):
     def pytorch_compute_output(self):
         return torch.nn.Dropout
 
+    def mx_compute_output(self, x, rate):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return mx.gluon.nn.Dropout(rate=rate)(x0).asnumpy()
+
     def tflite_compute_output(self, x, rate):
         input = tf.keras.layers.Input(shape=np.array(x).shape, dtype=tf.float32)
         if tf.__version__ > '2':
@@ -1027,7 +1557,7 @@ class Dropout(Operation):
         return interp.get_tensor(output_index)
 
     def compute_output(self):
-        ''' Compute and return the value of softmax function.
+        ''' Compute and return the value of dropout function.
         '''
         x, = self.input_nodes
         if self.framework == 'tf':
@@ -1044,21 +1574,24 @@ class Dropout(Operation):
                 torch.from_numpy(x.output_value)).numpy()
             return self.output_value
         elif self.framework == 'tflite':
-            self.output_value = self.tflite_compute_output(x.output_value)
+            self.output_value = self.tflite_compute_output(x.output_value, self.rate)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value, self.rate)
             return self.output_value
         else:
             raise NotImplementedError
 
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for softmax operation wrt input value.
+        ''' Compute the gradient for dropout operation wrt input value.
 
-        :param grad: The gradient of other operation wrt the softmax output.
+        :param grad: The gradient of other operation wrt the dropout output.
         :type grad: ndarray.
         '''
         input_value = self.input_nodes[0].output_value
 
         if grad is None:
-            grad = np.ones_like(self.output_value) #10000, 10
+            grad = np.ones_like(self.output_value) 
         
         if self.framework == 'tf':
             if tf.__version__ > '2':
@@ -1081,7 +1614,13 @@ class Dropout(Operation):
             out = self.pytorch_compute_output()(th_x, self.rate)
             out.backward(th_grad, retain_graph=True)
             return np.array(th_x.grad)
-
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = mx.gluon.nn.Dropout(rate=self.rate)(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
         else:
             raise NotImplementedError
 
@@ -1092,11 +1631,209 @@ def dropout(x, rate, name=None, framework='tf'):
 
 
 # ------------------------------------------------------------------------------
-# Transpose operation
+# ReLU operation
+# ------------------------------------------------------------------------------
+
+class ReLU(Operation):
+    ''' ReLU operation.
+    '''
+    def __init__(self, x, axes=None, name=None):
+        ''' ReLU constructor.
+
+        :param x: The input node.
+        :type x: Object of `Operation`, `Variable` or `Placeholder`.
+
+        :param name: The name of the operation.
+        :type name: str.
+        '''
+        super(self.__class__, self).__init__(x, name=name)
+        self.axes = axes
+
+    def pytorch_compute_output(self):
+        return torch.nn.ReLU
+
+    def tf_compute_output(self):
+        return tf.nn.relu
+
+    def mx_compute_output(self, x, axes):
+        x0 = mx.nd.array(x).as_np_ndarray()
+        return (mxnet.ndarray.relu(x0, axes=axes)).asnumpy()
+
+    def tflite_compute_output(self, x):
+        input = tf.keras.layers.Input(shape=x.shape, dtype=tf.float32)
+        output = tf.nn.relu(input)
+        model = tf.keras.Model(inputs=input, outputs=output)
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        tflite_model = converter.convert()
+
+        interp = tf.lite.Interpreter(model_content=tflite_model)
+
+        input_index = interp.get_input_details()[0]['index']
+        output_index = interp.get_output_details()[0]['index']
+
+        interp.resize_tensor_input(input_index, np.array([x]).shape)
+        interp.allocate_tensors()
+        interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+        interp.invoke()
+
+        return interp.get_tensor(output_index)[0]
+
+    def compute_output(self):
+        ''' Compute and return the relu operation result.
+        '''
+        x, = self.input_nodes
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(x.output_value).numpy()
+            return self.output_value
+        elif self.framework == 'pytorch':
+            self.output_value = self.pytorch_compute_output()(
+                torch.from_numpy(np.array(x.output_value))).numpy()
+            return self.output_value
+        elif self.framework == 'tflite':
+            self.output_value = self.tflite_compute_output(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(x.output_value)
+            return self.output_value
+        else:
+            raise NotImplementedError
+
+    def compute_gradient(self, grad=None, optimizer=None):
+        ''' Compute and return the gradient for relu.
+
+        :param grad: The gradient of other operation wrt the relu output.
+        :type grad: number or a ndarray, default value is 1.0.
+        '''
+        # Get input values.
+        x = self.input_nodes[0].output_value
+
+        # Default gradient wrt the relu output.
+        if grad is None:
+            grad = np.ones_like(self.output_value)
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_x = tf.constant(x, tf.float64)
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_x)
+                out = grad * self.tf_compute_output()(tf_x)
+            dz_dx = g.gradient(out, tf_x).numpy()
+            del g
+            return dz_dx
+
+        elif self.framework == 'pytorch':
+            th_x = V(torch.from_numpy(x), requires_grad=True)
+            th_grad = V(torch.from_numpy(grad))
+            out = self.pytorch_compute_output()(th_x)
+            out.backward(th_grad, retain_graph=True)
+            return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * mxnet.ndarray.relu(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
+
+        else:
+            raise NotImplementedError
+
+
+def relu(x, name=None):
+    ''' Computes the ReLU of a tensor.
+    '''
+    return ReLU(x, name=name)
+
+# ------------------------------------------------------------------------------
+# EinSum operation
+# ------------------------------------------------------------------------------
+
+class EinSum(Operation):
+    ''' EinSum operation.
+    '''
+    def __init__(self, x, equation=None, name=None):
+        ''' Operation constructor.
+
+        :param x: The input node.
+        :type x: Object of `Operation`, `Variable` or `Placeholder`.
+
+        :param name: The name of the operation.
+        :type name: str.
+        '''
+        super(self.__class__, self).__init__(x, name=name)
+        self.equation = equation
+
+    def tf_compute_output(self):
+        return tf.einsum
+
+    def mx_compute_output(self, inputs, equation):
+        xs = mx.nd.array(x).as_np_ndarray()
+        xs = [mx.nd.array(x).as_np_ndarray() for x in inputs]
+        return (mx.np.eimsum(equation, xs)).asnumpy()
+
+    def compute_output(self):
+        ''' Compute and return the einsum operation result.
+        '''
+        inputs = [node.output_value for node in self.input_nodes]
+
+        if self.framework == 'tf':
+            self.output_value = self.tf_compute_output()(self.equation, inputs).numpy()
+            return self.output_value
+        elif self.framework == 'mx':
+            self.output_value = self.mx_compute_output(self.equation, inputs)
+            return self.output_value
+        else:
+            raise NotImplementedError
+
+    def compute_gradient(self, grad=None, optimizer=None):
+        ''' Compute and return the gradient einsum.
+
+        :param grad: The gradient of other operation wrt the eimsum output.
+        :type grad: number or a ndarray, default value is 1.0.
+        '''
+        # Get input values.
+        inputs = [node.output_value for node in self.input_nodes]
+
+        # Default gradient wrt the sinsum output.
+        if grad is None:
+            grad = np.ones_like(self.output_value)
+
+        # Gradients wrt inputs.
+        if self.framework == 'tf':
+            tf_xs = [tf.constant(x, tf.float64) for x in inputs]
+            with tf.GradientTape(persistent=True) as g:
+                g.watch(tf_xs)
+                out = grad * self.tf_compute_output()(self.equation, tf_xs)
+            dz_dxs = [g.gradient(out, tf_x).numpy() for tf_x in tf_xs]
+            del g
+            return dz_dxs
+
+        elif self.framework == 'mx':
+            xs = [mx.nd.array(x).as_np_ndarray().attach_grad() for x in inputs]
+            with mx.autograd.record():
+                mx_result = grad * mx.np.eimsum(equation, xs)
+                mx_result.backward()
+            return [x.grad.asnumpy() for x in xs]
+
+        else:
+            raise NotImplementedError
+
+
+def einsum(x, name=None):
+    ''' Computes the einsum of a tensor.
+    '''
+    return EinSum(x, name=name)
+
+
+# ------------------------------------------------------------------------------
+# Custom operation
 # ------------------------------------------------------------------------------
 
 class Custom(Operation):
-    ''' Transpose operation. PERMS NOT IMPLEMENTED!
+    ''' Transpose operation.
     '''
     def __init__(self, model, x, name=None, framework='tf'):
         ''' Operation constructor.
@@ -1111,16 +1848,39 @@ class Custom(Operation):
         self.model = model
 
     def compute_output(self):
-        ''' Compute and return the value of exp function.
+        ''' Compute and return the value of a custom function.
         '''
         x, = self.input_nodes
-        self.output_value = self.model(x.output_value)
-        return self.output_value
+        if self.framework == 'tf' or self.framework == 'pytorch':
+            self.output_value = self.model(x.output_value)
+            return self.output_value
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            return (self.model(x0)).asnumpy()
+        elif self.framework == 'tflite':
+            converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
+            tflite_model = converter.convert()
+
+            interp = tf.lite.Interpreter(model_content=tflite_model)
+
+            input_index = interp.get_input_details()[0]['index']
+            output_index = interp.get_output_details()[0]['index']
+
+            interp.resize_tensor_input(input_index, np.array([x]).shape)
+            interp.allocate_tensors()
+            interp.set_tensor(input_index, np.array([x]).astype(np.float32))
+            interp.invoke()
+
+            self.output_value = interp.get_tensor(output_index)[0]
+            return self.output_value
+        else:
+            raise NotImplementedError
+
         
     def compute_gradient(self, grad=None, optimizer=None):
-        ''' Compute the gradient for softmax operation wrt input value.
+        ''' Compute the gradient for custom operation wrt input value.
 
-        :param grad: The gradient of other operation wrt the softmax output.
+        :param grad: The gradient of other operation wrt the custom op output.
         :type grad: ndarray.
         '''
         input_value = self.input_nodes[0].output_value
@@ -1150,6 +1910,14 @@ class Custom(Operation):
             out = self.model(th_x)
             out.backward(th_grad, retain_graph=True)
             return np.array(th_x.grad)
+
+        elif self.framework == 'mx':
+            x0 = mx.nd.array(x).as_np_ndarray()
+            x0.attach_grad()
+            with mx.autograd.record():
+                mx_result = grad * self.model(x0)
+                mx_result.backward()
+            return x0.grad.asnumpy()
 
         else:
             raise NotImplementedError
@@ -1309,7 +2077,7 @@ def placeholder(name=None):
 # ------------------------------------------------------------------------------
 # Function for gradients computation.
 # ------------------------------------------------------------------------------
-
+@profile(precision=4)
 def compute_gradients(target_op, optimizer=None):
     ''' Backpropagation implementation computing gradient of target operation wrt
         all the other connected nodes.
